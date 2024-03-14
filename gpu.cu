@@ -5,6 +5,18 @@
 
 // Put any static global variables here that you will use throughout the simulation.
 int blks;
+int bin_count;
+int* bin_particles;
+int* bin_particles_gpu;
+double bin_size;
+double bin_size_gpu;
+int bin_count_gpu;
+double size_gpu;
+int num_parts_gpu;
+
+particle_t* parts_gpu;
+particle_t* separate_parts_gpu; // Separate array for particles sorted by bin index
+
 
 __device__ void apply_force_gpu(particle_t& particle, particle_t& neighbor) {
     double dx = neighbor.x - particle.x;
@@ -31,8 +43,11 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts) {
         return;
 
     particles[tid].ax = particles[tid].ay = 0;
-    for (int j = 0; j < num_parts; j++)
+
+    
+    for (int j = 0; j < num_parts; j++) {
         apply_force_gpu(particles[tid], particles[j]);
+    }
 }
 
 __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
@@ -71,6 +86,44 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // parts live in GPU memory
     // Do not do any particle simulation here
 
+   // Initialize bin size and count
+    bin_size = size / sqrt(num_parts);
+    bin_count = ceil(size / bin_size);
+
+    // Initialize bin particles count
+    bin_particles = (int*)malloc(bin_count * bin_count * sizeof(int));
+    memset(bin_particles, 0, bin_count * bin_count * sizeof(int));
+
+    // Iterate through particles and count particles per bin
+    for (int i = 0; i < num_parts; ++i) {
+        int bin_x = (int)(parts[i].x / bin_size);
+        int bin_y = (int)(parts[i].y / bin_size);
+        bin_particles[bin_x * bin_count + bin_y]++;
+    }
+
+    // Prefix sum the bin counts
+    for (int i = 1; i < bin_count * bin_count; ++i) {
+        bin_particles[i] += bin_particles[i - 1];
+    }
+
+    // Allocate memory for separate array of particles sorted by bin index
+    int total_particles = bin_particles[bin_count * bin_count - 1];
+    cudaMalloc(&separate_parts_gpu, total_particles * sizeof(particle_t));
+
+    // Allocate memory for bin_particles_gpu and copy data to GPU
+    cudaMalloc(&bin_particles_gpu, bin_count * bin_count * sizeof(int));
+    cudaMemcpy(bin_particles_gpu, bin_particles, bin_count * bin_count * sizeof(int), cudaMemcpyHostToDevice);
+
+    // Allocate memory for other GPU variables and copy data
+    cudaMalloc(&parts_gpu, num_parts * sizeof(particle_t));
+    cudaMemcpy(parts_gpu, parts, num_parts * sizeof(particle_t), cudaMemcpyHostToDevice);
+
+    // Set other GPU variables
+    bin_size_gpu = bin_size;
+    bin_count_gpu = bin_count;
+    size_gpu = size;
+    num_parts_gpu = num_parts;
+
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 }
 
@@ -78,9 +131,16 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // parts live in GPU memory
     // Rewrite this function
 
+    // compute the number of blocks needed
+    blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
+
     // Compute forces
     compute_forces_gpu<<<blks, NUM_THREADS>>>(parts, num_parts);
 
+
     // Move particles
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
+
+    // synchronize 
+    cudaDeviceSynchronize();
 }
