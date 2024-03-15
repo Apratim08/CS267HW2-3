@@ -1,5 +1,7 @@
 #include "common.h"
 #include <cuda.h>
+#include <thrust/device_vector.h>
+#include <cuda_runtime.h>
 
 #define NUM_THREADS 256
 
@@ -13,6 +15,7 @@ double bin_size_gpu;
 int bin_count_gpu;
 double size_gpu;
 int num_parts_gpu;
+
 
 particle_t* parts_gpu;
 particle_t* separate_parts_gpu; // Separate array for particles sorted by bin index
@@ -86,13 +89,18 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // parts live in GPU memory
     // Do not do any particle simulation here
 
+    blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
+
    // Initialize bin size and count
-    bin_size = size / sqrt(num_parts);
-    bin_count = ceil(size / bin_size);
+    bin_size = size / blks;
+    int* bin_particle_count[blks];
+    
 
     // Initialize bin particles count
     bin_particles = (int*)malloc(bin_count * bin_count * sizeof(int));
     memset(bin_particles, 0, bin_count * bin_count * sizeof(int));
+
+    cudaMalloc(&bin_particles_gpu, bin_count * bin_count * sizeof(int));
 
     // Iterate through particles and count particles per bin
     for (int i = 0; i < num_parts; ++i) {
@@ -100,6 +108,12 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
         int bin_y = (int)(parts[i].y / bin_size);
         bin_particles[bin_x * bin_count + bin_y]++;
     }
+    atomicAdd(&bin_particle_count[bin_x * bin_count + bin_y], 1);
+    
+    cudaMemcpy(bin_particles_gpu, bin_particles, bin_count * bin_count * sizeof(int), cudaMemcpyHostToDevice);
+
+
+
 
     // Prefix sum the bin counts
     for (int i = 1; i < bin_count * bin_count; ++i) {
@@ -110,21 +124,12 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     int total_particles = bin_particles[bin_count * bin_count - 1];
     cudaMalloc(&separate_parts_gpu, total_particles * sizeof(particle_t));
 
-    // Allocate memory for bin_particles_gpu and copy data to GPU
-    cudaMalloc(&bin_particles_gpu, bin_count * bin_count * sizeof(int));
-    cudaMemcpy(bin_particles_gpu, bin_particles, bin_count * bin_count * sizeof(int), cudaMemcpyHostToDevice);
-
-    // Allocate memory for other GPU variables and copy data
-    cudaMalloc(&parts_gpu, num_parts * sizeof(particle_t));
-    cudaMemcpy(parts_gpu, parts, num_parts * sizeof(particle_t), cudaMemcpyHostToDevice);
-
     // Set other GPU variables
     bin_size_gpu = bin_size;
     bin_count_gpu = bin_count;
     size_gpu = size;
     num_parts_gpu = num_parts;
 
-    blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
@@ -141,6 +146,4 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // Move particles
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
 
-    // synchronize 
-    cudaDeviceSynchronize();
 }
