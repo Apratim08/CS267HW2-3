@@ -104,8 +104,8 @@ __global__ void compute_forces_gpu_ON(particle_t* particles, int num_parts, int*
             if (nbx >= 0 && nbx < num_bins && nby >= 0 && nby < num_bins) {
                 int neighbor_bin_index = nbx + nby * num_bins;
                 // find start_idx and end_idx of the neighbor bin in sorted_parts
-                int cur_bin_start_idx = bin_start_idx[neighbor_bin_index_left];
-                if (neighbor_bin_index_left + 1 < num_bins) {
+                int cur_bin_start_idx = bin_start_idx[neighbor_bin_index];
+                if (neighbor_bin_index + 1 < num_bins) {
                     int cur_bin_end_idx = bin_start_idx[neighbor_bin_index + 1];
                 } else {
                     int cur_bin_end_idx = num_parts;
