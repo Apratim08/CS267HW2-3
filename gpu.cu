@@ -2,24 +2,18 @@
 #include <cuda.h>
 #include <thrust/device_vector.h>
 #include <cuda_runtime.h>
+#include <thrust/scan.h>
 
 #define NUM_THREADS 256
 
 // Put any static global variables here that you will use throughout the simulation.
 int blks;
-int bin_count;
-int* bin_particles;
-int* bin_particles_gpu;
+int num_bins;
+int num_bins;
 double bin_size;
-double bin_size_gpu;
-int bin_count_gpu;
-double size_gpu;
-int num_parts_gpu;
-
-
-particle_t* parts_gpu;
-particle_t* separate_parts_gpu; // Separate array for particles sorted by bin index
-
+int* sorted_parts; // separate array recording id of particles sorted by bin index
+int* bin_start_idx; // start idx of the bins in sorted_parts
+int* dynamic_assign_idx; // a temporal array for updating sorted_parts
 
 __device__ void apply_force_gpu(particle_t& particle, particle_t& neighbor) {
     double dx = neighbor.x - particle.x;
@@ -53,6 +47,17 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts) {
     }
 }
 
+// O(N) Code compute_forces_gpu() function
+__global__ void gpu_compute_forces() {
+    // Get the thread (particle) ID
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= num_parts)
+        return;
+    particle_t target_part;
+    gpu_cpy_part(particles[tid], target_part);
+    
+}
+
 __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
 
     // Get thread (particle) ID
@@ -83,52 +88,83 @@ __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
     }
 }
 
+//copy particle
+__device__ void gpu_cpy_part(particle_t& src_part, particle_t& dst_part){
+    dst_part.x = src_part.x;
+    dst_part.y = src_part.y;
+    dst_part.vx = src_part.vx;
+    dst_part.vy = src_part.vy;
+    dst_part.ax = src_part.ax;
+    dst_part.ay = src_part.ay;
+}
+
+// assign particles to bins based on their corrent position, get bin_start_idx
+__global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, int bin_size, int num_bins) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= num_parts)
+        return;
+    particle_t target_part;
+    gpu_cpy_part(particles[tid], target_part);
+    int bx = target_part.x / bin_size;
+    int by = target_part.y / bin_size;
+    int bin_index = bx + by * num_bins;
+    atomicAdd(&bin_start_idx[bin_index], 1);
+}
+
+// assign particles to bins based on their corrent position, put their id / ori index in sorted_parts
+__global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, int* dynamic_assign_idx) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= num_parts)
+        return;
+    particle_t target_part;
+    gpu_cpy_part(particles[tid], target_part);
+    int bx = target_part.x / bin_size;
+    int by = target_part.y / bin_size;
+    int bin_index = bx + by * num_bins;
+    int write_index = atomicAdd(&dynamic_assign_idx[bin_index], 1);
+    sorted_parts[write_index] = tid;
+}
+
+static void gpu_init_arrays(int num_parts, int num_bins) {
+    // Initialize sorted_parts, bin_start_idx and dynamic_assign_idx
+    cudaMalloc((void**)& sorted_parts, num_parts * sizeof(int));
+    cudaMalloc((void**)& bin_start_idx, num_bins * sizeof(int));
+    cudaMalloc((void**)& dynamic_assign_idx, num_bins * sizeof(int));
+}
+
+static void gpu_clear_arrays() {
+    // Initialize sorted_parts, bin_start_idx and dynamic_assign_idx
+    cudaFree(sorted_parts);
+    cudaMalloc(bin_start_idx);
+    cudaMalloc(dynamic_assign_idx);
+}
+
 void init_simulation(particle_t* parts, int num_parts, double size) {
     // You can use this space to initialize data objects that you may need
     // This function will be called once before the algorithm begins
     // parts live in GPU memory
     // Do not do any particle simulation here
 
+    // NOTE: This means that blks * NUM_THREADS >= num_parts, e.g. each particle
+    // would have 1 thread to do computation.
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
-   // Initialize bin size and count
-    bin_size = size / blks;
-    int* bin_particle_count[blks];
+   // Initialize bin size and count (note on x and y axis 
+   // these two numbers should be the same)
+    num_bins = static_cast<int>(size / cutoff);
+    bin_size = size / num_bins;
+
+    gpu_init_arrays(num_parts, num_bins);
+    // This should update bin_start_idx to contain number of particles at each bin
+    update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins);
+    // in-place prefix sum
+    thrust::exclusive_scan(bin_start_idx, bin_start_idx + 6, bin_start_idx);
+    // copy data from bin_start_idx to dynamic_assign_idx
+    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    // get sorted_parts based on dynamic_assign_idx
+    update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts, dynamic_assign_idx);
+
     
-
-    // Initialize bin particles count
-    bin_particles = (int*)malloc(bin_count * bin_count * sizeof(int));
-    memset(bin_particles, 0, bin_count * bin_count * sizeof(int));
-
-    cudaMalloc(&bin_particles_gpu, bin_count * bin_count * sizeof(int));
-
-    // Iterate through particles and count particles per bin
-    for (int i = 0; i < num_parts; ++i) {
-        int bin_x = (int)(parts[i].x / bin_size);
-        int bin_y = (int)(parts[i].y / bin_size);
-        bin_particles[bin_x * bin_count + bin_y]++;
-    }
-    atomicAdd(&bin_particle_count[bin_x * bin_count + bin_y], 1);
-    
-    cudaMemcpy(bin_particles_gpu, bin_particles, bin_count * bin_count * sizeof(int), cudaMemcpyHostToDevice);
-
-
-
-
-    // Prefix sum the bin counts
-    for (int i = 1; i < bin_count * bin_count; ++i) {
-        bin_particles[i] += bin_particles[i - 1];
-    }
-
-    // Allocate memory for separate array of particles sorted by bin index
-    int total_particles = bin_particles[bin_count * bin_count - 1];
-    cudaMalloc(&separate_parts_gpu, total_particles * sizeof(particle_t));
-
-    // Set other GPU variables
-    bin_size_gpu = bin_size;
-    bin_count_gpu = bin_count;
-    size_gpu = size;
-    num_parts_gpu = num_parts;
 
 }
 
