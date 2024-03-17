@@ -177,7 +177,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // This should update bin_start_idx to contain number of particles at each bin
     update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
     // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + 6, bin_start_idx);
+    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins, bin_start_idx);
     // copy data from bin_start_idx to dynamic_assign_idx
     cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
     // get sorted_parts based on dynamic_assign_idx
@@ -203,7 +203,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // This should update bin_start_idx to contain number of particles at each bin
     update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
     // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + 6, bin_start_idx);
+    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins, bin_start_idx);
     // copy data from bin_start_idx to dynamic_assign_idx
     cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
     // get sorted_parts based on dynamic_assign_idx
