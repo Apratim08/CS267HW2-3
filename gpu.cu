@@ -3,6 +3,8 @@
 #include <thrust/device_vector.h>
 #include <cuda_runtime.h>
 #include <thrust/scan.h>
+#include <iostream>
+#include <cstdlib>
 
 #define NUM_THREADS 256
 
@@ -21,10 +23,14 @@ __global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, 
     if (tid >= num_parts)
         return;
 
-    int bx = particles[tid].x / bin_size;
-    int by = particles[tid].y / bin_size;
+    int bx = (int)floor(particles[tid].x / bin_size);
+    int by = (int)floor(particles[tid].y / bin_size);
     int bin_index = bx + by * num_bins;
-    atomicAdd(&bin_start_idx[bin_index], 1);
+    if (bin_index < 0 || bin_index >= num_bins * num_bins) {
+        printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
+        return;
+    }
+    atomicAdd(bin_start_idx + bin_index, 1);
 }
 
 // assign particles to bins based on their corrent position, put their id / ori index in sorted_parts
@@ -35,6 +41,7 @@ __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, in
     int bx = particles[tid].x / bin_size;
     int by = particles[tid].y / bin_size;
     int bin_index = bx + by * num_bins;
+    
     int write_index = atomicAdd(&dynamic_assign_idx[bin_index], 1);
     sorted_parts[write_index] = tid;
 }
@@ -42,8 +49,8 @@ __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, in
 static void gpu_init_arrays(int num_parts, int num_bins) {
     // Initialize sorted_parts, bin_start_idx and dynamic_assign_idx
     cudaMalloc((void**)& sorted_parts, num_parts * sizeof(int));
-    cudaMalloc((void**)& bin_start_idx, num_bins * sizeof(int));
-    cudaMalloc((void**)& dynamic_assign_idx, num_bins * sizeof(int));
+    cudaMalloc((void**)& bin_start_idx, num_bins * num_bins * sizeof(int));
+    cudaMalloc((void**)& dynamic_assign_idx, num_bins * num_bins * sizeof(int));
 }
 
 static void gpu_clear_arrays() {
@@ -110,7 +117,7 @@ __global__ void compute_forces_gpu_ON(particle_t* particles, int num_parts, int*
                 int neighbor_bin_index = nbx + nby * num_bins;
                 // find start_idx and end_idx of the neighbor bin in sorted_parts
                 int cur_bin_start_idx = bin_start_idx[neighbor_bin_index];
-                if (neighbor_bin_index + 1 < num_bins) {
+                if (neighbor_bin_index + 1 < num_bins * num_bins) {
                     cur_bin_end_idx = bin_start_idx[neighbor_bin_index + 1];
                 } else {
                     cur_bin_end_idx = num_parts;
@@ -170,19 +177,45 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 
     // Initialize bin size and count (note on x and y axis 
     // these two numbers should be the same)
-    num_bins = static_cast<int>(size / cutoff);
+    num_bins = (int)floor(size / cutoff);
     bin_size = size / num_bins;
 
+    std::cout << "num_bins " << num_bins << std::endl;
+    std::cout << "bin_size " << bin_size << std::endl;
+
     gpu_init_arrays(num_parts, num_bins);
+
+    std::cout << "Arrays initialized successfully." << std::endl;
+
+    for (int i = 0; i < num_parts; ++i) {
+        std::cout << "Particle " << i << std::endl;
+        int bx = (int)floor(parts[i].x / bin_size);
+        int by = (int)floor(parts[i].y / bin_size);
+        int bin_index = bx + by * num_bins;
+        std::cout << "Particle " << i << "has bx " << bx << "by " << by << "bin_index" << bin_index << std::endl;
+    }
+    exit();
+
     // This should update bin_start_idx to contain number of particles at each bin
     update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
+    
+    std::cout << "update_bin_start_idx " << bin_start_idx[0] << std::endl;
+
     // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins, bin_start_idx);
+    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins * num_bins, bin_start_idx);
+    
+    std::cout << "prefix sum " << bin_start_idx[1] << std::endl;
+
     // copy data from bin_start_idx to dynamic_assign_idx
-    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    
+    std::cout << "copy " << dynamic_assign_idx[1] << std::endl;
+
     // get sorted_parts based on dynamic_assign_idx
     update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts, dynamic_assign_idx, bin_size, num_bins, num_parts);
 
+    std::cout << "sorted_parts " << sorted_parts[dynamic_assign_idx[1]] << std::endl;
+    
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
@@ -203,9 +236,9 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // This should update bin_start_idx to contain number of particles at each bin
     update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
     // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins, bin_start_idx);
+    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins * num_bins, bin_start_idx);
     // copy data from bin_start_idx to dynamic_assign_idx
-    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
     // get sorted_parts based on dynamic_assign_idx
     update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts, dynamic_assign_idx, bin_size, num_bins, num_parts);
 
