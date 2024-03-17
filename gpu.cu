@@ -16,13 +16,19 @@ int* sorted_parts; // separate array recording id of particles sorted by bin ind
 int* bin_start_idx; // start idx of the bins in sorted_parts
 int* dynamic_assign_idx; // a temporal array for updating sorted_parts
 
+int* sorted_parts_gpu;
+int* bin_start_idx_gpu;
+int* dynamic_assign_idx_gpu;
+int* bin_count_gpu;
+int* bin_count;
+
 // get bin_start_idx
 __global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, double bin_size, int num_bins, int num_parts) {
-    
+    // printf(":)");
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= num_parts)
         return;
-
+    // printf("Thread %d\n", tid);
     int bx = (int)floor(particles[tid].x / bin_size);
     int by = (int)floor(particles[tid].y / bin_size);
     int bin_index = bx + by * num_bins;
@@ -30,7 +36,9 @@ __global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, 
         printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
         return;
     }
-    atomicAdd(bin_start_idx + bin_index, 1);
+    atomicAdd(&bin_start_idx[bin_index], 1);
+    // printf("Thread %d finished\n", tid);
+
 }
 
 // assign particles to bins based on their corrent position, put their id / ori index in sorted_parts
@@ -46,12 +54,34 @@ __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, in
     sorted_parts[write_index] = tid;
 }
 
-static void gpu_init_arrays(int num_parts, int num_bins) {
+
+static void gpu_init_arrays(int num_parts, int num_bins, int blks) {
     // Initialize sorted_parts, bin_start_idx and dynamic_assign_idx
-    cudaMalloc((void**)& sorted_parts, num_parts * sizeof(int));
-    cudaMalloc((void**)& bin_start_idx, num_bins * num_bins * sizeof(int));
-    cudaMalloc((void**)& dynamic_assign_idx, num_bins * num_bins * sizeof(int));
+
+    sorted_parts = new int[num_parts];
+    bin_start_idx = new int[num_bins * num_bins];
+    dynamic_assign_idx = new int[num_bins * num_bins];
+    bin_count = new int[num_bins * num_bins];
+
+    std::fill(sorted_parts, sorted_parts + num_parts, 0);
+    std::fill(bin_start_idx, bin_start_idx + num_bins * num_bins, 0);
+    std::fill(dynamic_assign_idx, dynamic_assign_idx + num_bins * num_bins, 0);
+    std::fill(bin_count, bin_count + num_bins * num_bins, 0);
+    
+    // int temp_blks = (num_bins * num_bins + NUM_THREADS - 1) / NUM_THREADS;
+    cudaMalloc((void**)& sorted_parts_gpu, num_parts * sizeof(int));
+    cudaMalloc((void**)& bin_start_idx_gpu, num_bins * num_bins * sizeof(int));
+    cudaMalloc((void**)& dynamic_assign_idx_gpu, num_bins * num_bins * sizeof(int));
+    cudaMalloc((void**)& bin_count_gpu, num_bins * num_bins * sizeof(int));
+
+    cudaMemcpy(sorted_parts_gpu, sorted_parts, num_parts * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(bin_start_idx_gpu, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(dynamic_assign_idx_gpu, dynamic_assign_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(bin_count_gpu, bin_count, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
+   
+    cudaDeviceSynchronize();
 }
+
 
 static void gpu_clear_arrays() {
     // Free memory allocated for sorted_parts, bin_start_idx and dynamic_assign_idx
@@ -183,38 +213,62 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     std::cout << "num_bins " << num_bins << std::endl;
     std::cout << "bin_size " << bin_size << std::endl;
 
-    gpu_init_arrays(num_parts, num_bins);
+    gpu_init_arrays(num_parts, num_bins, blks);
 
     std::cout << "Arrays initialized successfully." << std::endl;
 
+    // Copy data from parts to cpu_parts_array
+    particle_t* cpu_parts_array = new particle_t[num_parts];
+    cudaMemcpy(cpu_parts_array, parts, num_parts * sizeof(particle_t), cudaMemcpyDeviceToHost);
+ 
+
     for (int i = 0; i < num_parts; ++i) {
-        std::cout << "Particle " << i << std::endl;
-        int bx = (int)floor(parts[i].x / bin_size);
-        int by = (int)floor(parts[i].y / bin_size);
+
+        int bx = (int)floor(cpu_parts_array[i].x / bin_size);
+        int by = (int)floor(cpu_parts_array[i].y / bin_size);
         int bin_index = bx + by * num_bins;
-        std::cout << "Particle " << i << "has bx " << bx << "by " << by << "bin_index" << bin_index << std::endl;
+        
+        // check out-of-bounds for bin_index
+        if (bin_index < 0 || bin_index >= num_bins * num_bins) {
+            std::cerr << "Error: bin_index out of bounds." << std::endl;
+            std::cout << "Particle " << i << "has bx " << bx << "by " << by << "bin_index" << bin_index << std::endl;
+            return;
+        }
     }
-    exit();
+    // exit(0);
 
     // This should update bin_start_idx to contain number of particles at each bin
-    update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
+    update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_count_gpu, bin_size, num_bins, num_parts);
+    
     
     std::cout << "update_bin_start_idx " << bin_start_idx[0] << std::endl;
+    cudaMemcpy(bin_count, bin_count_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToHost);
 
-    // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins * num_bins, bin_start_idx);
+    cudaMemcpy(bin_start_idx, bin_start_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToHost);
+   
+
+    // prefix sum
+    // thrust::exclusive_scan(bin_count_gpu, bin_count_gpu + num_bins * num_bins, bin_start_idx_gpu);
+
+    // for loop for prefix sum 
+    for (int i = 0; i < num_bins * num_bins - 1; ++i) {
+        // std::cout << "prefix sum " << bin_start_idx[i] << std::endl;
+        bin_start_idx[i+1] = bin_start_idx[i] + bin_count[i];
+
+    }
+    cudaMemcpy(bin_start_idx_gpu, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
     
     std::cout << "prefix sum " << bin_start_idx[1] << std::endl;
 
     // copy data from bin_start_idx to dynamic_assign_idx
-    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(dynamic_assign_idx_gpu, bin_start_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
     
     std::cout << "copy " << dynamic_assign_idx[1] << std::endl;
 
     // get sorted_parts based on dynamic_assign_idx
-    update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts, dynamic_assign_idx, bin_size, num_bins, num_parts);
+    update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts_gpu, dynamic_assign_idx_gpu, bin_size, num_bins, num_parts);
 
-    std::cout << "sorted_parts " << sorted_parts[dynamic_assign_idx[1]] << std::endl;
+    std::cout << "sorted_parts " << sorted_parts_gpu[dynamic_assign_idx_gpu[1]] << std::endl;
     
 }
 
@@ -226,20 +280,20 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
     // Compute forces
-    compute_forces_gpu_ON<<<blks, NUM_THREADS>>>(parts, num_parts, sorted_parts, bin_start_idx, bin_size, num_bins);
+    compute_forces_gpu_ON<<<blks, NUM_THREADS>>>(parts, num_parts, sorted_parts_gpu, bin_start_idx_gpu, bin_size, num_bins);
     // Move particles
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
     // Clear array from this iter
     gpu_clear_arrays();
     // Get new empty arrays for next iter
-    gpu_init_arrays(num_parts, num_bins);
+    gpu_init_arrays(num_parts, num_bins, blks);
     // This should update bin_start_idx to contain number of particles at each bin
-    update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx, bin_size, num_bins, num_parts);
+    update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_start_idx_gpu, bin_size, num_bins, num_parts);
     // in-place prefix sum
-    thrust::exclusive_scan(bin_start_idx, bin_start_idx + num_bins * num_bins, bin_start_idx);
+    thrust::exclusive_scan(bin_start_idx_gpu, bin_start_idx_gpu + num_bins * num_bins, bin_start_idx_gpu);
     // copy data from bin_start_idx to dynamic_assign_idx
-    cudaMemcpy(dynamic_assign_idx, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(dynamic_assign_idx_gpu, bin_start_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
     // get sorted_parts based on dynamic_assign_idx
-    update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts, dynamic_assign_idx, bin_size, num_bins, num_parts);
+    update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts_gpu, dynamic_assign_idx_gpu, bin_size, num_bins, num_parts);
 
 }
