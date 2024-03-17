@@ -1,6 +1,8 @@
 #include "common.h"
 #include <cuda.h>
+#include <stdio.h>
 #include <thrust/device_vector.h>
+#include <thrust/execution_policy.h>
 #include <cuda_runtime.h>
 #include <thrust/scan.h>
 #include <iostream>
@@ -26,8 +28,9 @@ int* bin_count;
 __global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, double bin_size, int num_bins, int num_parts) {
     // printf(":)");
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= num_parts)
+    if (tid >= num_parts){
         return;
+    }
     // printf("Thread %d\n", tid);
     int bx = (int)floor(particles[tid].x / bin_size);
     int by = (int)floor(particles[tid].y / bin_size);
@@ -43,41 +46,50 @@ __global__ void update_bin_start_idx(particle_t* particles, int* bin_start_idx, 
 
 // assign particles to bins based on their corrent position, put their id / ori index in sorted_parts
 __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, int* dynamic_assign_idx, double bin_size, int num_bins, int num_parts) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= num_parts)
-        return;
-    int bx = particles[tid].x / bin_size;
-    int by = particles[tid].y / bin_size;
-    int bin_index = bx + by * num_bins;
+    // printf(":)");
+
     
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    
+
+    if (tid >= num_parts) {
+        return;
+    }
+    // int bx = particles[tid].x / bin_size;
+    int bx = (int)floor(particles[tid].x / bin_size);
+    // int by = particles[tid].y / bin_size;
+    int by = (int)floor(particles[tid].y / bin_size);   
+    int bin_index = bx + by * num_bins;
+    // printf("bin_index %d\n", bin_index);
+    if (bin_index < 0 || bin_index >= num_bins * num_bins) {
+        printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
+        return;
+    }
+
     int write_index = atomicAdd(&dynamic_assign_idx[bin_index], 1);
+    printf("write_index %d\n", write_index);
+    if (write_index >= num_parts) {
+        printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
+        return;
+    }
     sorted_parts[write_index] = tid;
 }
 
+__global__ void setZero(int* arr, int size) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= size) {
+        return;
+    }
+    arr[tid] = 0;
+}
 
 static void gpu_init_arrays(int num_parts, int num_bins, int blks) {
     // Initialize sorted_parts, bin_start_idx and dynamic_assign_idx
 
-    sorted_parts = new int[num_parts];
-    bin_start_idx = new int[num_bins * num_bins];
-    dynamic_assign_idx = new int[num_bins * num_bins];
-    bin_count = new int[num_bins * num_bins];
-
-    std::fill(sorted_parts, sorted_parts + num_parts, 0);
-    std::fill(bin_start_idx, bin_start_idx + num_bins * num_bins, 0);
-    std::fill(dynamic_assign_idx, dynamic_assign_idx + num_bins * num_bins, 0);
-    std::fill(bin_count, bin_count + num_bins * num_bins, 0);
-    
-    // int temp_blks = (num_bins * num_bins + NUM_THREADS - 1) / NUM_THREADS;
     cudaMalloc((void**)& sorted_parts_gpu, num_parts * sizeof(int));
     cudaMalloc((void**)& bin_start_idx_gpu, num_bins * num_bins * sizeof(int));
     cudaMalloc((void**)& dynamic_assign_idx_gpu, num_bins * num_bins * sizeof(int));
     cudaMalloc((void**)& bin_count_gpu, num_bins * num_bins * sizeof(int));
-
-    cudaMemcpy(sorted_parts_gpu, sorted_parts, num_parts * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(bin_start_idx_gpu, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(dynamic_assign_idx_gpu, dynamic_assign_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(bin_count_gpu, bin_count, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
    
     cudaDeviceSynchronize();
 }
@@ -214,6 +226,9 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     std::cout << "bin_size " << bin_size << std::endl;
 
     gpu_init_arrays(num_parts, num_bins, blks);
+    int temp_blks = (num_bins * num_bins + NUM_THREADS - 1) / NUM_THREADS;
+    setZero<<<temp_blks, NUM_THREADS>>>(bin_count_gpu, num_bins * num_bins);
+
 
     std::cout << "Arrays initialized successfully." << std::endl;
 
@@ -239,34 +254,85 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 
     // This should update bin_start_idx to contain number of particles at each bin
     update_bin_start_idx<<<blks, NUM_THREADS>>>(parts, bin_count_gpu, bin_size, num_bins, num_parts);
-    
+    cudaDeviceSynchronize();
     
     std::cout << "update_bin_start_idx " << bin_start_idx[0] << std::endl;
     cudaMemcpy(bin_count, bin_count_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToHost);
 
+    setZero<<<temp_blks, NUM_THREADS>>>(bin_start_idx_gpu, num_bins * num_bins);
+    // prefix sum
+    thrust::exclusive_scan(thrust::device, bin_count_gpu, bin_count_gpu + num_bins * num_bins, bin_start_idx_gpu);
     cudaMemcpy(bin_start_idx, bin_start_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToHost);
    
 
-    // prefix sum
-    // thrust::exclusive_scan(bin_count_gpu, bin_count_gpu + num_bins * num_bins, bin_start_idx_gpu);
+    
 
-    // for loop for prefix sum 
-    for (int i = 0; i < num_bins * num_bins - 1; ++i) {
-        // std::cout << "prefix sum " << bin_start_idx[i] << std::endl;
-        bin_start_idx[i+1] = bin_start_idx[i] + bin_count[i];
+    // // for loop for prefix sum 
+    // for (int i = 0; i < num_bins * num_bins - 1; ++i) {
+    //     // std::cout << "prefix sum " << bin_start_idx[i] << std::endl;
+    //     bin_start_idx[i+1] = bin_start_idx[i] + bin_count[i];
 
-    }
-    cudaMemcpy(bin_start_idx_gpu, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
+    // }
+    // cudaMemcpy(bin_start_idx_gpu, bin_start_idx, num_bins * num_bins * sizeof(int), cudaMemcpyHostToDevice);
+    cudaDeviceSynchronize();
+    // cudaError_t cuda_error = cudaGetLastError();
+    // if(cuda_error != cudaSuccess) {
+    //     std::cerr << "CUDA error during cudaMemcpy: " << cudaGetErrorString(cuda_error) << std::endl;
+    //     exit(EXIT_FAILURE);
+    // }
+
     
     std::cout << "prefix sum " << bin_start_idx[1] << std::endl;
 
     // copy data from bin_start_idx to dynamic_assign_idx
     cudaMemcpy(dynamic_assign_idx_gpu, bin_start_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToDevice);
+    cudaDeviceSynchronize();
+    
+    // cudaError_t cuda_error = cudaGetLastError();
+    // if(cuda_error != cudaSuccess) {
+    //     std::cerr << "CUDA error during cudaMemcpy: " << cudaGetErrorString(cuda_error) << std::endl;
+    //     exit(EXIT_FAILURE);
+    // }
+
+    cudaMemcpy(dynamic_assign_idx, dynamic_assign_idx_gpu, num_bins * num_bins * sizeof(int), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < num_bins * num_bins; ++i) {
+        // std::cout << "copy " << dynamic_assign_idx[i] << std::endl;
+        if (bin_start_idx[i] != dynamic_assign_idx[i]) {
+            std::cerr << "Error: bin_start_idx and dynamic_assign_idx not equal." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+    }
     
     std::cout << "copy " << dynamic_assign_idx[1] << std::endl;
 
+    cudaMemcpy(sorted_parts, sorted_parts_gpu, num_parts * sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaError_t cuda_error = cudaGetLastError();
+    // if(cuda_error != cudaSuccess) {
+    //     std::cerr << "CUDA error during cudaMemcpy: " << cudaGetErrorString(cuda_error) << std::endl;
+    //     exit(EXIT_FAILURE);
+    // }
+    for (int i = 0; i < num_parts; ++i) {
+        if(sorted_parts[i] != 0) {
+            std::cerr << "Error: sorted_parts not initialized correctly." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    std::cout << "bin_count " << bin_count[num_bins * num_bins - 1] << std::endl;
+    // for (int i = 0; i < num_bins * num_bins; ++i) {
+    //     std::cout << "bin_count " << bin_count[i] << std::endl;
+    //     std::cout << "dynamic_assign_idx " << dynamic_assign_idx[i] << std::endl;
+    // }
+    std::cout << "dynamic_assign_idx " << dynamic_assign_idx[num_bins * num_bins - 1] << std::endl;
+    
     // get sorted_parts based on dynamic_assign_idx
     update_sorted_parts<<<blks, NUM_THREADS>>>(parts, sorted_parts_gpu, dynamic_assign_idx_gpu, bin_size, num_bins, num_parts);
+    // Check for errors after kernel launch
+    // cuda_error = cudaGetLastError();
+    // if (cuda_error != cudaSuccess) {
+    //     std::cerr << "CUDA error during kernel launch: " << cudaGetErrorString(cuda_error) << std::endl;
+    //     exit(EXIT_FAILURE);
+    // }
 
     std::cout << "sorted_parts " << sorted_parts_gpu[dynamic_assign_idx_gpu[1]] << std::endl;
     
