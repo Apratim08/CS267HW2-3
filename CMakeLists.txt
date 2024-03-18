@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 # Group number
 set(GROUP_NAME "None" CACHE STRING "Your group name as it appears on bCourses (no spaces)")
 
+# Add CUDA flags for debug mode
+set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G -g")
+
 # Packaging system
 if (NOT ${GROUP_NAME} STREQUAL None)
     set(CPACK_GENERATOR TGZ)

@@ -42,9 +42,10 @@ __global__ void set_int_array(int* array, int val, int array_len){
 __global__ void update_bin_count(particle_t* particles, int* bin_start_idx, double bin_size, int num_bins, int num_parts) {
     // printf(":)");
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= num_parts)
+    if (tid >= num_parts){
         return;
-
+    }
+    // printf("Thread %d\n", tid);
     int bx = (int)floor(particles[tid].x / bin_size);
     int by = (int)floor(particles[tid].y / bin_size);
     int bin_index = bx + by * num_bins;
@@ -60,9 +61,21 @@ __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, in
     int by = (int)floor(particles[tid].y / bin_size);
     int bin_index = bx + by * num_bins;
     int write_index = atomicAdd(&dynamic_assign_idx[bin_index], 1);
+    printf("write_index %d\n", write_index);
+    if (write_index >= num_parts) {
+        printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
+        return;
+    }
     sorted_parts[write_index] = tid;
 }
 
+__global__ void setZero(int* arr, int size) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= size) {
+        return;
+    }
+    arr[tid] = 0;
+}
 
 __device__ void apply_force_gpu(particle_t& particle, particle_t& neighbor) {
     double dx = neighbor.x - particle.x;
@@ -166,7 +179,6 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_size = size / num_bins;
     // init arrays
     gpu_init_arrays(num_parts, size);
-
     bin_blks = (num_bins * num_bins + NUM_THREADS - 1) / NUM_THREADS;
     int bin_blks_start = (num_bins * num_bins + 1 + NUM_THREADS - 1) / NUM_THREADS;
     // set bin_start_idx with default values num_parts
