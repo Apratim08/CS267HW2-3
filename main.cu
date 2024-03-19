@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     particle_t* parts = new particle_t[num_parts];
 
     init_particles(parts, num_parts, size, part_seed);
-    std::cout << "parts[0].x = " << parts[0].x << ", parts[0].y = " << parts[0].y << std::endl;
+    // std::cout << "parts[0].x = " << parts[0].x << ", parts[0].y = " << parts[0].y << std::endl;
 
     particle_t* parts_gpu;
     cudaMalloc((void**)&parts_gpu, num_parts * sizeof(particle_t));

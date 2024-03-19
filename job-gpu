@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -N 1
+#SBATCH -N 1000000
 #SBATCH -C gpu
 #SBATCH -A mp309
 #SBATCH -t 00:30:00
