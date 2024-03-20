@@ -61,11 +61,11 @@ __global__ void update_sorted_parts(particle_t* particles, int* sorted_parts, in
     int by = (int)floor(particles[tid].y / bin_size);
     int bin_index = bx + by * num_bins;
     int write_index = atomicAdd(&dynamic_assign_idx[bin_index], 1);
-    printf("write_index %d\n", write_index);
-    if (write_index >= num_parts) {
-        printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
-        return;
-    }
+    // printf("write_index %d\n", write_index);
+    // if (write_index >= num_parts) {
+    //     printf("Thread %d calculated out-of-bounds bin_index: %d\n", tid, bin_index);
+    //     return;
+    // }
     sorted_parts[write_index] = tid;
 }
 
