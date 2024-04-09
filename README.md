@@ -9,14 +9,14 @@ March 2024
 Here we are using Graphics Processing Units (GPUs), particularly the Nvidia A100s, present on the [Perlmutter](https://blogs.nvidia.com/blog/nersc-perlmutter-ai-supercomputer/), the fastest system on the planet on the 16- and 32-bit mixed-precision math AI uses, to compute near-forces particle simulation. Within our simulation, particles interact through repulsive forces, with interactions occurring only when particles approach within a specified cutoff distance, depicted as a grey region surrounding each particle. While a naive approach to computing particle forces would yield a time complexity of O(n^2), our simulation leverages a low particle density to achieve an expected time complexity of O(n) due to the reduced number of interactions. The goal of this assignment is to exploit parallel computing techniques, specifically targeting GPUs, to achieve a significant speedup over the serial implementation, aiming for close to linear speedup (`T/p`) when utilizing `p` processors.
 
 ## 2  Method
-### 1. First Attempt
+### First Attempt
 - Sorted parts array: We ensured the creation of a sorted_parts array, where each element contains the indices of particles sorted by their corresponding bin IDs. This approach allows for more efficient access to particles compared to having one array of length particles per bin. The `update_sorted_parts` kernel is responsible for computing the `sorted_parts` array.
 - Count number of particles and synchronization: The `update_bin_start_idx` kernel function iterates over all particles and maps each particle to its corresponding bin based on its position. Atomic operations (`atomicAdd`) are used to ensure that concurrent threads can safely update shared variables without causing race conditions or data corruption.
 - Prefix sum the bin counts: The `prefix_sum_bins` kernel function performs an exclusive prefix sum operation on the bin counts array. This operation computes the cumulative sum of the bin counts up to each bin index, resulting in an array of prefix sums that represents the starting index of each bin in the `sorted_parts` array.
 - Add particles to separate array starting from bin_idx: The `update_sorted_parts` kernel function is responsible for updating the `sorted_parts` array based on the bin counts and prefix sum. It assigns each particle to the correct position in the sorted array according to its bin index. Atomic operations are used here to ensure correct indexing and thread safety when updating the array.
 - What worked and what didn’t: `update_sorted_parts`: Although the code followed the standard guidelines and sanity checks by performing each step on the GPU in parallel, utilizing atomic instructions to handle concurrent updates to shared memory locations, and avoiding unnecessary memory copies, we were facing issues in compiling the code as the implementation was running into segmentation fault.
 
-### 2. Second Attempt
+### Second Attempt
 
 - Global Variables:
    - Introduced the `bin_blks` variable to determine the number of blocks needed for bin-related operations.
