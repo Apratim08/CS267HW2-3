@@ -54,13 +54,13 @@ Table 1: Simulation Time for Different Numbers of Particles
 
 - Log-log scale showing parallel code’s performance
 
-![](img1.png)
+![](img1)
 
 The graph exhibits a near-linear behaviour for higher number of particles, i.e. more than 105 particles in the log-log scale.
 
 - Benchmarking GPU implementation against the starter code
 
-![](img2.png)
+![](img2)
 
 Both graph exhibits a near-linear behaviour. For parallel implementation, the linear behaviour is more prominent for higher number of particles, i.e. more than 105 particles
 
@@ -68,7 +68,7 @@ in the log-log scale.
 
 - Benchmarking GPU parallelization against the OpenMP and MPI parallelization.
 
-![](img3.png)
+![](img3)
 
 Based on our observations, we noticed that both OpenMP and MPI graphs exhibit similar linea rspeed-up as the number of particles increase, but GPU implementation is much faster than the former.
 
